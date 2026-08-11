@@ -521,6 +521,8 @@ document.getElementById("btnExport").addEventListener("click",exportExcel);
 
 /* ===== Generatore XLSX reale: ZIP (stored) + OOXML, senza librerie ===== */
 
+/* ===== Generatore XLSX reale: ZIP (stored) + OOXML, senza librerie ===== */
+
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -621,8 +623,13 @@ function colLetter(n) { // 1 -> A
  * rows: array di array. Valori numerici -> celle numeriche, altrimenti testo.
  * headers: array di stringhe (prima riga, in grassetto).
  */
-function buildXlsx(headers, rows, sheetName) {
-  const widths = [16, 16, 14, 62, 12, 12, 14, 16, 30];
+function buildXlsx(headers, rows, sheetName, images) {
+  // images: [{rowIndex (0-based sui dati), col (0-based), bytes: Uint8Array}]
+  images = images || [];
+  const widths = [16, 16, 14, 62, 12, 12, 14, 15, 30];
+  const IMG_PX = 78;                       // lato immagine in pixel
+  const EMU = 9525;                        // EMU per pixel
+  const rowsWithImg = new Set(images.map(im => im.rowIndex));
 
   /* --- tabella condivisa delle stringhe (compatibile con tutti i lettori) --- */
   const sstIndex = new Map();
@@ -635,7 +642,7 @@ function buildXlsx(headers, rows, sheetName) {
   }
 
   let sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>`;
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>`;
   widths.forEach((w, i) => { sheet += `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`; });
   sheet += `</cols><sheetData>`;
 
@@ -647,7 +654,7 @@ function buildXlsx(headers, rows, sheetName) {
 
   rows.forEach((row, ri) => {
     const r = ri + 2;
-    sheet += `<row r="${r}">`;
+    sheet += rowsWithImg.has(ri) ? `<row r="${r}" ht="62" customHeight="1">` : `<row r="${r}">`;
     row.forEach((val, ci) => {
       if (val === "" || val === null || val === undefined) return;
       const ref = colLetter(ci + 1) + r;
@@ -661,14 +668,41 @@ function buildXlsx(headers, rows, sheetName) {
     });
     sheet += `</row>`;
   });
-  sheet += `</sheetData><autoFilter ref="A1:${colLetter(headers.length)}${rows.length + 1}"/></worksheet>`;
+  sheet += `</sheetData><autoFilter ref="A1:${colLetter(headers.length)}${rows.length + 1}"/>`;
+  if (images.length) sheet += `<drawing r:id="rIdDr"/>`;
+  sheet += `</worksheet>`;
 
   const sharedStrings = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${sstList.length}" uniqueCount="${sstList.length}">` +
     sstList.map(s => `<si><t xml:space="preserve">${xmlEsc(s)}</t></si>`).join("") + `</sst>`;
 
+  /* ---- parti per le immagini incorporate ---- */
+  const extraFiles = [];
+  let ctExtra = "", sheetRels = "";
+  if (images.length) {
+    let drawing = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">`;
+    let drawRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`;
+    images.forEach((im, i) => {
+      const n = i + 1;
+      extraFiles.push({ name: `xl/media/foto${n}.jpeg`, data: im.bytes });
+      drawRels += `<Relationship Id="rIdImg${n}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/foto${n}.jpeg"/>`;
+      const cx = IMG_PX * EMU, cy = IMG_PX * EMU;
+      drawing += `<xdr:oneCellAnchor><xdr:from><xdr:col>${im.col}</xdr:col><xdr:colOff>${Math.round(0.6 * EMU) * 10}</xdr:colOff><xdr:row>${im.rowIndex + 1}</xdr:row><xdr:rowOff>${2 * EMU}</xdr:rowOff></xdr:from><xdr:ext cx="${cx}" cy="${cy}"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="${n}" name="Foto ${n}"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr><xdr:blipFill><a:blip xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:embed="rIdImg${n}"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>`;
+    });
+    drawing += `</xdr:wsDr>`;
+    drawRels += `</Relationships>`;
+    extraFiles.push({ name: "xl/drawings/drawing1.xml", data: strBytes(drawing) });
+    extraFiles.push({ name: "xl/drawings/_rels/drawing1.xml.rels", data: strBytes(drawRels) });
+    sheetRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdDr" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>`;
+    extraFiles.push({ name: "xl/worksheets/_rels/sheet1.xml.rels", data: strBytes(sheetRels) });
+    ctExtra = `<Default Extension="jpeg" ContentType="image/jpeg"/><Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>`;
+  }
+
   const contentTypes = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>`;
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>${ctExtra}<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>`;
 
   const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
@@ -691,41 +725,83 @@ function buildXlsx(headers, rows, sheetName) {
     { name: "xl/styles.xml", data: strBytes(styles) },
     { name: "xl/sharedStrings.xml", data: strBytes(sharedStrings) },
     { name: "xl/worksheets/sheet1.xml", data: strBytes(sheet) },
-  ]);
+  ].concat(extraFiles));
 }
 
-function exportExcel(){
+/* base64 dataURL -> byte */
+function dataUrlToBytes(u){
+  const b64=String(u).split(",")[1]||"";
+  const bin=atob(b64);
+  const a=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) a[i]=bin.charCodeAt(i);
+  return a;
+}
+/* miniatura quadrata per l'Excel (ritaglio centrale, ~240px) */
+function makeThumb(dataUrl,size){
+  return new Promise(res=>{
+    try{
+      const img=new Image();
+      img.onload=()=>{
+        try{
+          const s=Math.min(img.width,img.height);
+          const sx=(img.width-s)/2, sy=(img.height-s)/2;
+          const cv=document.createElement("canvas"); cv.width=size; cv.height=size;
+          cv.getContext("2d").drawImage(img,sx,sy,s,s,0,0,size,size);
+          res(cv.toDataURL("image/jpeg",0.72));
+        }catch(e){ res(dataUrl); }
+      };
+      img.onerror=()=>res(dataUrl);
+      img.src=dataUrl;
+    }catch(e){ res(dataUrl); }
+  });
+}
+
+async function exportExcel(){
+  const btn=document.getElementById("btnExport");
+  const label=btn.textContent;
   try{
+    btn.textContent="…";
     const d=new Date();
     const dd=String(d.getDate()).padStart(2,"0"), mm=String(d.getMonth()+1).padStart(2,"0"), yy=d.getFullYear();
     const dateLabel=`${dd}/${mm}/${yy}`;
     const headers=["Luogo","Specifico","Tipologia","Descrizione",
       "Quantità rilevata al 01/08/2023","Quantità rilevata al 28/03/2024",
       "Quantità rilevata al "+dateLabel,"Foto Articolo","Note"];
-    const rows=allItems.map(it=>{
+
+    const conFoto=allItems.filter(it=>photos[it.id]).length;
+    if(conFoto>0) toast("Preparo "+conFoto+" foto…");
+
+    const rows=[], images=[];
+    for(let i=0;i<allItems.length;i++){
+      const it=allItems[i];
       const rec=records[it.id]||{};
       const q26=(rec.q2026!=null && rec.q2026!=="")?rec.q2026:"";
       const note=rec.note!=null?rec.note:(it.note||"");
       const isNew=it.id>=NEW_ID_BASE;
-      const foto=photos[it.id]?"FOTO SCATTATA":(it.fotoRef||"");
-      return [it.luogo,it.specifico,it.tipologia,it.descrizione+(isNew?"  [NUOVO]":""),
-        it.q2023,it.q2024,q26,foto,note];
-    });
-    const bytes=buildXlsx(headers,rows,"Inventario "+yy);
+      const hasPhoto=!!photos[it.id];
+      // se c'è la foto la cella resta libera per l'immagine; altrimenti resta il vecchio riferimento
+      const foto=hasPhoto?"":(it.fotoRef||"");
+      rows.push([it.luogo,it.specifico,it.tipologia,it.descrizione+(isNew?"  [NUOVO]":""),
+        it.q2023,it.q2024,q26,foto,note]);
+      if(hasPhoto){
+        const thumb=await makeThumb(photos[it.id],240);
+        try{ images.push({rowIndex:i, col:7, bytes:dataUrlToBytes(thumb)}); }catch(e){}
+      }
+    }
+
+    const bytes=buildXlsx(headers,rows,"Inventario "+yy,images);
     const blob=new Blob([bytes],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
     const url=URL.createObjectURL(blob);
     const a=document.createElement("a");
-    a.href=url;
-    a.download=`Inventario_Rosa_Grand_${yy}-${mm}-${dd}.xlsx`;
+    a.href=url; a.download=`Inventario_Rosa_Grand_${yy}-${mm}-${dd}.xlsx`;
     document.body.appendChild(a); a.click();
     setTimeout(()=>{a.remove(); URL.revokeObjectURL(url);},1500);
-    toast("Excel esportato");
+    toast(images.length?("Excel esportato con "+images.length+" foto"):"Excel esportato");
   }catch(err){
     console.error(err);
     toast("Errore export: "+err.message);
-  }
+  }finally{ btn.textContent=label; }
 }
-
 
 /* ============ Strumenti: backup, ripristino, azzeramento ============ */
 const menuBg=document.getElementById("menuBg");
