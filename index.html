@@ -260,32 +260,51 @@ let allItems = [];    // ITEMS + customItems (ricostruito)
 
 /* ============ IndexedDB ============ */
 let db;
+const STORES=["records","photos","custom","refphotos"];
+function creaStore(d){ STORES.forEach(s=>{ if(!d.objectStoreNames.contains(s)) d.createObjectStore(s); }); }
+
+/* Apre l'archivio locale; se un contenitore manca (creato da una versione
+   precedente) lo aggiunge alzando la versione. Non fallisce mai in modo bloccante. */
 function openDB(){
-  return new Promise((res,rej)=>{
-    const r = indexedDB.open("inventario_rosagrand",2);
-    r.onupgradeneeded = e=>{
-      const d=e.target.result;
-      if(!d.objectStoreNames.contains("records")) d.createObjectStore("records");
-      if(!d.objectStoreNames.contains("photos"))  d.createObjectStore("photos");
-      if(!d.objectStoreNames.contains("custom"))  d.createObjectStore("custom");
-      if(!d.objectStoreNames.contains("refphotos")) d.createObjectStore("refphotos");
-    };
-    r.onsuccess=e=>{db=e.target.result;res();};
-    r.onerror=e=>rej(e);
+  return new Promise(res=>{
+    let done=false; const fine=()=>{ if(!done){done=true;res();} };
+    try{
+      const r=indexedDB.open("inventario_rosagrand");
+      r.onupgradeneeded=e=>creaStore(e.target.result);
+      r.onsuccess=e=>{
+        const d=e.target.result;
+        const mancanti=STORES.filter(s=>!d.objectStoreNames.contains(s));
+        if(!mancanti.length){ db=d; return fine(); }
+        const v=d.version+1; d.close();
+        const r2=indexedDB.open("inventario_rosagrand",v);
+        r2.onupgradeneeded=ev=>creaStore(ev.target.result);
+        r2.onsuccess=ev=>{ db=ev.target.result; fine(); };
+        r2.onerror=()=>{ db=null; fine(); };
+        r2.onblocked=()=>{ db=null; fine(); };
+      };
+      r.onerror=()=>{ db=null; fine(); };
+      r.onblocked=()=>{ db=null; fine(); };
+      setTimeout(()=>{ if(!done){ db=db||null; fine(); } },4000); // non restare mai appesi
+    }catch(e){ db=null; fine(); }
   });
 }
 function idbGetAll(store){
-  return new Promise((res)=>{
-    const out={}; const tx=db.transaction(store,"readonly").objectStore(store);
-    const cur=tx.openCursor();
-    cur.onsuccess=e=>{const c=e.target.result; if(c){out[c.key]=c.value;c.continue();} else res(out);};
-    cur.onerror=()=>res(out);
+  return new Promise(res=>{
+    const out={};
+    if(!db || !db.objectStoreNames.contains(store)) return res(out);
+    try{
+      const cur=db.transaction(store,"readonly").objectStore(store).openCursor();
+      cur.onsuccess=e=>{const c=e.target.result; if(c){out[c.key]=c.value;c.continue();} else res(out);};
+      cur.onerror=()=>res(out);
+    }catch(e){ res(out); }
   });
 }
 function idbPut(store,key,val){
+  if(!db) return;
   try{const tx=db.transaction(store,"readwrite");tx.objectStore(store).put(val,key);}catch(e){}
 }
 function idbDel(store,key){
+  if(!db) return;
   try{const tx=db.transaction(store,"readwrite");tx.objectStore(store).delete(key);}catch(e){}
 }
 
@@ -967,16 +986,30 @@ function fillSelect(sel,arr,firstStay){
   arr.forEach(v=>{const o=document.createElement("option");o.value=v;o.textContent=v;sel.appendChild(o);});
 }
 async function init(){
-  await openDB();
-  records=await idbGetAll("records");
-  photos =await idbGetAll("photos");
-  refPhotos=await idbGetAll("refphotos");
-  const cust=await idbGetAll("custom");
-  customItems=Object.values(cust).sort((a,b)=>a.id-b.id);
-  rebuildAll();
-  fillSelect(fTip,TIPI);
-  fillSelect(document.getElementById("mTip"),TIPI);
-  updateDone(); render();
+  try{ await openDB(); }catch(e){ db=null; }
+  try{
+    records=await idbGetAll("records");
+    photos =await idbGetAll("photos");
+    refPhotos=await idbGetAll("refphotos");
+    const cust=await idbGetAll("custom");
+    customItems=Object.values(cust).sort((a,b)=>a.id-b.id);
+  }catch(e){ console.error("archivio non leggibile",e); }
+  try{
+    rebuildAll();
+    fillSelect(fTip,TIPI);
+    fillSelect(document.getElementById("mTip"),TIPI);
+    updateDone(); render();
+  }catch(e){
+    console.error(e);
+    document.getElementById("list").innerHTML='<div class="empty-state">Errore di avvio: '+esc(e.message)+'</div>';
+  }
+  if(!db){
+    const w=document.createElement("div");
+    w.id="dbWarn";
+    w.style.cssText="background:#F6E9E7;color:#B0463B;padding:10px 14px;font-size:13px;font-weight:600;text-align:center";
+    w.textContent="⚠ Salvataggio non disponibile su questo browser: i conteggi non verranno memorizzati.";
+    document.querySelector("main").before(w);
+  }
 }
 init();
 </script>
