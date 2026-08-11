@@ -264,8 +264,11 @@ const STORES=["records","photos","custom","refphotos"];
 function creaStore(d){ STORES.forEach(s=>{ if(!d.objectStoreNames.contains(s)) d.createObjectStore(s); }); }
 
 /* Apre l'archivio locale; se un contenitore manca (creato da una versione
-   precedente) lo aggiunge alzando la versione. Non fallisce mai in modo bloccante. */
-function openDB(){
+   precedente) lo aggiunge alzando la versione. Non fallisce mai in modo bloccante.
+   motivoArchivio: "" = tutto ok, "bloccato" = altra scheda aperta, "assente" = non disponibile */
+let motivoArchivio="";
+function openDB(tentativo){
+  tentativo=tentativo||0;
   return new Promise(res=>{
     let done=false; const fine=()=>{ if(!done){done=true;res();} };
     try{
@@ -274,19 +277,43 @@ function openDB(){
       r.onsuccess=e=>{
         const d=e.target.result;
         const mancanti=STORES.filter(s=>!d.objectStoreNames.contains(s));
-        if(!mancanti.length){ db=d; return fine(); }
+        if(!mancanti.length){ db=d; sorvegliaDb(); motivoArchivio=""; return fine(); }
         const v=d.version+1; d.close();
         const r2=indexedDB.open("inventario_rosagrand",v);
         r2.onupgradeneeded=ev=>creaStore(ev.target.result);
-        r2.onsuccess=ev=>{ db=ev.target.result; fine(); };
-        r2.onerror=()=>{ db=null; fine(); };
-        r2.onblocked=()=>{ db=null; fine(); };
+        r2.onsuccess=ev=>{ db=ev.target.result; sorvegliaDb(); motivoArchivio=""; fine(); };
+        r2.onerror=()=>{ db=null; motivoArchivio="assente"; fine(); };
+        r2.onblocked=()=>{ db=null; motivoArchivio="bloccato"; fine(); };
       };
-      r.onerror=()=>{ db=null; fine(); };
-      r.onblocked=()=>{ db=null; fine(); };
-      setTimeout(()=>{ if(!done){ db=db||null; fine(); } },4000); // non restare mai appesi
-    }catch(e){ db=null; fine(); }
+      r.onerror=()=>{ db=null; motivoArchivio="assente"; fine(); };
+      r.onblocked=()=>{ db=null; motivoArchivio="bloccato"; fine(); };
+      setTimeout(()=>{ if(!done){ db=null; motivoArchivio=motivoArchivio||"bloccato"; fine(); } },3000);
+    }catch(e){ db=null; motivoArchivio="assente"; fine(); }
+  }).then(async ()=>{
+    // se bloccato da un'altra scheda, riprova un paio di volte
+    if(!db && motivoArchivio==="bloccato" && tentativo<1){
+      await new Promise(r=>setTimeout(r,900));
+      return openDB(tentativo+1);
+    }
   });
+}
+/* se un'altra scheda aggiorna l'archivio, libera la connessione invece di bloccarla */
+function sorvegliaDb(){
+  if(!db) return;
+  db.onversionchange=()=>{ try{db.close();}catch(e){} db=null; mostraAvvisoArchivio("ricarica"); };
+}
+function mostraAvvisoArchivio(motivo){
+  let w=document.getElementById("dbWarn");
+  if(!w){
+    w=document.createElement("div"); w.id="dbWarn";
+    w.style.cssText="background:#F6E9E7;color:#B0463B;padding:10px 14px;font-size:13px;font-weight:600;text-align:center;line-height:1.35";
+    document.querySelector("main").before(w);
+  }
+  w.textContent = motivo==="bloccato"
+    ? "⚠ Salvataggio bloccato: l'inventario è aperto in un'altra scheda. Chiudi le altre schede e ricarica la pagina."
+    : motivo==="ricarica"
+    ? "⚠ L'archivio è stato aggiornato in un'altra scheda. Ricarica la pagina per continuare a salvare."
+    : "⚠ Salvataggio non disponibile su questo browser (navigazione anonima o dati dei siti bloccati): i conteggi non verranno memorizzati.";
 }
 function idbGetAll(store){
   return new Promise(res=>{
@@ -986,14 +1013,7 @@ function fillSelect(sel,arr,firstStay){
   arr.forEach(v=>{const o=document.createElement("option");o.value=v;o.textContent=v;sel.appendChild(o);});
 }
 async function init(){
-  try{ await openDB(); }catch(e){ db=null; }
-  try{
-    records=await idbGetAll("records");
-    photos =await idbGetAll("photos");
-    refPhotos=await idbGetAll("refphotos");
-    const cust=await idbGetAll("custom");
-    customItems=Object.values(cust).sort((a,b)=>a.id-b.id);
-  }catch(e){ console.error("archivio non leggibile",e); }
+  // 1) la lista si vede subito, senza attendere l'archivio
   try{
     rebuildAll();
     fillSelect(fTip,TIPI);
@@ -1002,14 +1022,19 @@ async function init(){
   }catch(e){
     console.error(e);
     document.getElementById("list").innerHTML='<div class="empty-state">Errore di avvio: '+esc(e.message)+'</div>';
+    return;
   }
-  if(!db){
-    const w=document.createElement("div");
-    w.id="dbWarn";
-    w.style.cssText="background:#F6E9E7;color:#B0463B;padding:10px 14px;font-size:13px;font-weight:600;text-align:center";
-    w.textContent="⚠ Salvataggio non disponibile su questo browser: i conteggi non verranno memorizzati.";
-    document.querySelector("main").before(w);
-  }
+  // 2) poi si recuperano i dati salvati e si ridisegna
+  try{ await openDB(); }catch(e){ db=null; motivoArchivio="assente"; }
+  try{
+    records=await idbGetAll("records");
+    photos =await idbGetAll("photos");
+    refPhotos=await idbGetAll("refphotos");
+    const cust=await idbGetAll("custom");
+    customItems=Object.values(cust).sort((a,b)=>a.id-b.id);
+    rebuildAll(); updateDone(); render();
+  }catch(e){ console.error("archivio non leggibile",e); }
+  if(!db) mostraAvvisoArchivio(motivoArchivio);
 }
 init();
 </script>
