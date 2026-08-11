@@ -82,6 +82,8 @@
   .thumb.has{border-style:solid;border-color:var(--ok)}
   .thumb .cam{font-size:19px;line-height:1}
   .thumb input{position:absolute;inset:0;opacity:0}
+  .arch{position:absolute;bottom:0;left:0;right:0;background:rgba(20,73,59,.85);color:#fff;
+    font-size:8.5px;font-weight:700;letter-spacing:.4px;text-align:center;padding:1px 0}
   .info{flex:1;min-width:0}
   .desc{font-weight:600;font-size:15px;line-height:1.25}
   .tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
@@ -175,7 +177,6 @@
   </div>
   <div class="filters">
     <select id="fTip"><option value="">Tutte le tipologie</option></select>
-    <button class="togglebtn" id="fTodo">Da contare</button>
     <label class="importbtn">🖼 Importa foto
       <input type="file" accept="image/*" multiple id="bulkPhotos">
     </label>
@@ -235,6 +236,7 @@
     <button class="menuitem" id="btnBackup"><b>💾 Salva backup</b><span>Scarica un file con conteggi, note, articoli nuovi e foto. Tienilo da parte: se cambi tablet o si cancellano i dati, recuperi tutto.</span></button>
     <button class="menuitem" id="btnRestore"><b>♻️ Ripristina backup</b><span>Ricarica un file di backup salvato in precedenza.</span></button>
     <input type="file" id="restoreFile" accept=".json,application/json" style="display:none">
+    <button class="menuitem" id="btnZip"><b>📷 Scarica le foto (ZIP)</b><span>Un pacchetto con tutte le foto scattate, rinominate con l'articolo, più un elenco riepilogativo. Da consegnare insieme all'Excel.</span></button>
     <button class="menuitem danger" id="btnReset"><b>🗑 Azzera conteggio</b><span>Cancella tutte le quantità, le note e le foto di questo inventario. Gli articoli restano.</span></button>
     <div class="modal-actions"><button class="btn-primary" id="menuClose">Chiudi</button></div>
   </div>
@@ -252,6 +254,7 @@ const NEW_ID_BASE = 100000;
 
 let records  = {};   // id -> {q2026, note}
 let photos   = {};   // id -> dataURL (foto scattata sul posto)
+let refPhotos = {};   // numero di riferimento -> dataURL (archivio importato)
 let customItems = []; // articoli nuovi aggiunti
 let allItems = [];    // ITEMS + customItems (ricostruito)
 
@@ -265,6 +268,7 @@ function openDB(){
       if(!d.objectStoreNames.contains("records")) d.createObjectStore("records");
       if(!d.objectStoreNames.contains("photos"))  d.createObjectStore("photos");
       if(!d.objectStoreNames.contains("custom"))  d.createObjectStore("custom");
+      if(!d.objectStoreNames.contains("refphotos")) d.createObjectStore("refphotos");
     };
     r.onsuccess=e=>{db=e.target.result;res();};
     r.onerror=e=>rej(e);
@@ -294,9 +298,14 @@ function norm(s){return (s??"").toString().toLowerCase().normalize("NFD").replac
 const listEl=document.getElementById("list");
 const qEl=document.getElementById("q");
 const fTip=document.getElementById("fTip");
-const fTodo=document.getElementById("fTodo");
-let todoOnly=false;
 
+function normRef(r){ const s=String(r??"").trim(); if(!s) return ""; const n=parseInt(s,10); return isNaN(n)?s:String(n); }
+function getPhoto(it){
+  if(photos[it.id]) return {src:photos[it.id],arch:false};
+  const k=normRef(it.fotoRef);
+  if(k && refPhotos[k]) return {src:refPhotos[k],arch:true};
+  return null;
+}
 function countedNum(id){const r=records[id]; return (r && r.q2026!=="" && r.q2026!=null)? Number(r.q2026):null;}
 
 function buildCard(it){
@@ -314,9 +323,9 @@ function buildCard(it){
     if(z) tags.push(`<span class="tag zone">📍 ${esc(z)}</span>`);
   }
 
-  const ph=photos[it.id];
+  const ph=getPhoto(it);
   const thumb = ph
-    ? `<div class="thumb has" data-act="photo" data-id="${it.id}"><img src="${ph}" alt=""><input type="file" accept="image/*" capture="environment" data-file="${it.id}"></div>`
+    ? `<div class="thumb has" data-act="photo" data-id="${it.id}"><img src="${ph.src}" alt="">${ph.arch?'<span class="arch">2024</span>':''}<input type="file" accept="image/*" capture="environment" data-file="${it.id}"></div>`
     : `<div class="thumb" data-act="photo" data-id="${it.id}"><span class="cam">📷</span><span>Foto</span><input type="file" accept="image/*" capture="environment" data-file="${it.id}"></div>`;
 
   const refParts=[];
@@ -354,7 +363,6 @@ function render(){
   const tip=fTip.value;
   let arr=allItems.filter(it=>{
     if(tip && it.tipologia!==tip) return false;
-    if(todoOnly && countedNum(it.id)!=null) return false;
     if(words.length){
       const hay=norm(it.descrizione+" "+it.luogo+" "+it.specifico+" "+it.tipologia);
       if(!words.every(w=>hay.includes(w))) return false;
@@ -473,7 +481,6 @@ qEl.addEventListener("input",()=>{
 });
 document.getElementById("clearq").addEventListener("click",()=>{qEl.value="";document.getElementById("clearq").classList.remove("show");render();qEl.focus();});
 fTip.addEventListener("change",render);
-fTodo.addEventListener("click",()=>{todoOnly=!todoOnly;fTodo.classList.toggle("active",todoOnly);render();});
 
 /* ============ Modal nuovo articolo ============ */
 const modalBg=document.getElementById("modalBg");
@@ -768,7 +775,7 @@ async function exportExcel(){
       "Quantità rilevata al 01/08/2023","Quantità rilevata al 28/03/2024",
       "Quantità rilevata al "+dateLabel,"Foto Articolo","Note"];
 
-    const conFoto=allItems.filter(it=>photos[it.id]).length;
+    const conFoto=allItems.filter(it=>getPhoto(it)).length;
     if(conFoto>0) toast("Preparo "+conFoto+" foto…");
 
     const rows=[], images=[];
@@ -778,13 +785,14 @@ async function exportExcel(){
       const q26=(rec.q2026!=null && rec.q2026!=="")?rec.q2026:"";
       const note=rec.note!=null?rec.note:(it.note||"");
       const isNew=it.id>=NEW_ID_BASE;
-      const hasPhoto=!!photos[it.id];
+      const ph=getPhoto(it);
+      const hasPhoto=!!ph;
       // se c'è la foto la cella resta libera per l'immagine; altrimenti resta il vecchio riferimento
       const foto=hasPhoto?"":(it.fotoRef||"");
       rows.push([it.luogo,it.specifico,it.tipologia,it.descrizione+(isNew?"  [NUOVO]":""),
         it.q2023,it.q2024,q26,foto,note]);
       if(hasPhoto){
-        const thumb=await makeThumb(photos[it.id],240);
+        const thumb=await makeThumb(ph.src,240);
         try{ images.push({rowIndex:i, col:7, bytes:dataUrlToBytes(thumb)}); }catch(e){}
       }
     }
@@ -802,6 +810,43 @@ async function exportExcel(){
     toast("Errore export: "+err.message);
   }finally{ btn.textContent=label; }
 }
+
+
+/* ============ Importazione foto d'archivio ============ */
+/* Abbina il nome del file al numero di riferimento: "878.jpg", "IMG_878.jpeg", "878 (1).png" -> 878 */
+function refFromFilename(name){
+  const base=String(name).replace(/\.[^.]+$/,"");
+  const m=base.match(/\d+/g);
+  if(!m) return "";
+  return String(parseInt(m[m.length-1],10));
+}
+const REF_ATTESI=(()=>{ const s=new Set(); ITEMS.forEach(it=>{const k=normRef(it.fotoRef); if(k)s.add(k);}); return s; })();
+
+document.getElementById("bulkPhotos").addEventListener("change",async e=>{
+  const files=[...e.target.files]; e.target.value="";
+  if(!files.length) return;
+  let usate=0, scartate=0, errori=0;
+  toast("Importo "+files.length+" foto…");
+  for(let i=0;i<files.length;i++){
+    const f=files[i];
+    const ref=refFromFilename(f.name);
+    if(!ref || !REF_ATTESI.has(ref)){ scartate++; continue; }
+    try{
+      const dataUrl=await new Promise((res,rej)=>{
+        const fr=new FileReader();
+        fr.onload=()=>res(fr.result); fr.onerror=()=>rej(new Error("lettura"));
+        fr.readAsDataURL(f);
+      });
+      const small=await makeThumb(dataUrl,420);
+      refPhotos[ref]=small;
+      idbPut("refphotos",ref,small);
+      usate++;
+    }catch(err){ errori++; }
+    if(i%25===0){ toast("Importate "+usate+" di "+files.length+"…"); await new Promise(r=>setTimeout(r,0)); }
+  }
+  render();
+  toast("Importate "+usate+" foto"+(scartate?" · "+scartate+" senza corrispondenza":"" ));
+});
 
 /* ============ Strumenti: backup, ripristino, azzeramento ============ */
 const menuBg=document.getElementById("menuBg");
@@ -821,7 +866,7 @@ document.getElementById("btnBackup").addEventListener("click",()=>{
   try{
     const d=new Date();
     const stamp=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-    const payload={formato:"inventario-rosagrand", versione:1, data:d.toISOString(), records, photos, customItems};
+    const payload={formato:"inventario-rosagrand", versione:2, data:d.toISOString(), records, photos, refPhotos, customItems};
     downloadBlob(new Blob([JSON.stringify(payload)],{type:"application/json"}), `Backup_Inventario_${stamp}.json`);
     menuBg.classList.remove("show");
     toast("Backup salvato");
@@ -837,9 +882,10 @@ document.getElementById("restoreFile").addEventListener("change",e=>{
       const p=JSON.parse(fr.result);
       if(p.formato!=="inventario-rosagrand") throw new Error("file non riconosciuto");
       if(!window.confirm("Ripristinare il backup? I dati attuali su questo dispositivo verranno sostituiti.")) return;
-      records=p.records||{}; photos=p.photos||{}; customItems=p.customItems||[];
+      records=p.records||{}; photos=p.photos||{}; refPhotos=p.refPhotos||{}; customItems=p.customItems||[];
       Object.keys(records).forEach(k=>idbPut("records",Number(k),records[k]));
       Object.keys(photos).forEach(k=>idbPut("photos",Number(k),photos[k]));
+      Object.keys(refPhotos).forEach(k=>idbPut("refphotos",k,refPhotos[k]));
       customItems.forEach(it=>idbPut("custom",it.id,it));
       rebuildAll(); updateDone(); render();
       menuBg.classList.remove("show");
@@ -849,6 +895,53 @@ document.getElementById("restoreFile").addEventListener("change",e=>{
   fr.readAsText(f);
   e.target.value="";
 });
+
+
+/* ============ Esportazione foto in ZIP ============ */
+function safeName(s){
+  return String(s||"articolo")
+    .replace(/[\\/:*?"<>|]/g,"-")      // caratteri vietati nei nomi file
+    .replace(/\s+/g," ").trim().slice(0,70);
+}
+function csvCell(v){
+  const s=String(v??"");
+  return /[";\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
+}
+async function exportPhotosZip(){
+  const btn=document.getElementById("btnZip");
+  const lab=btn.innerHTML;
+  try{
+    const conFoto=allItems.filter(it=>photos[it.id]);
+    if(!conFoto.length){ toast("Nessuna foto scattata da esportare"); return; }
+    btn.innerHTML="<b>Preparo "+conFoto.length+" foto…</b>";
+    await new Promise(r=>setTimeout(r,30));
+
+    const files=[]; const usati=new Set(); const righe=[["File","Descrizione","Luogo","Tipologia","Quantità rilevata","Note"]];
+    conFoto.forEach((it,i)=>{
+      const rec=records[it.id]||{};
+      let base=String(i+1).padStart(3,"0")+" - "+safeName(it.descrizione);
+      let name=base+".jpg", n=2;
+      while(usati.has(name)){ name=base+" ("+(n++)+").jpg"; }
+      usati.add(name);
+      files.push({name, data: dataUrlToBytes(photos[it.id])});
+      righe.push([name, it.descrizione, it.luogo, it.tipologia,
+        (rec.q2026!=null&&rec.q2026!=="")?rec.q2026:"", (rec.note!=null?rec.note:(it.note||""))]);
+    });
+
+    const csv="\ufeff"+righe.map(r=>r.map(csvCell).join(";")).join("\r\n");
+    files.push({name:"_elenco foto.csv", data: strBytes(csv)});
+
+    const d=new Date();
+    const stamp=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+    downloadBlob(new Blob([makeZip(files)],{type:"application/zip"}), `Foto_Inventario_${stamp}.zip`);
+    menuBg.classList.remove("show");
+    toast(conFoto.length+" foto esportate");
+  }catch(err){
+    console.error(err);
+    toast("Errore export foto: "+err.message);
+  }finally{ btn.innerHTML=lab; }
+}
+document.getElementById("btnZip").addEventListener("click",exportPhotosZip);
 
 document.getElementById("btnReset").addEventListener("click",()=>{
   if(!window.confirm("Azzerare TUTTI i conteggi, le note e le foto?\n\nOperazione non annullabile. Salva prima un backup.")) return;
@@ -877,6 +970,7 @@ async function init(){
   await openDB();
   records=await idbGetAll("records");
   photos =await idbGetAll("photos");
+  refPhotos=await idbGetAll("refphotos");
   const cust=await idbGetAll("custom");
   customItems=Object.values(cust).sort((a,b)=>a.id-b.id);
   rebuildAll();
