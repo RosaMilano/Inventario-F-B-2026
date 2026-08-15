@@ -1039,8 +1039,13 @@ document.getElementById("btnReset").addEventListener("click",()=>{
 
 /* ============ Init ============ */
 let DUP=new Set(); // descrizioni (normalizzate) che compaiono più volte -> mostra il luogo per distinguerle
+/* confronto alfabetico italiano: ignora accenti e maiuscole */
+const collator = (typeof Intl!=="undefined" && Intl.Collator)
+  ? new Intl.Collator("it",{sensitivity:"base",numeric:true})
+  : {compare:(a,b)=>norm(a)<norm(b)?-1:(norm(a)>norm(b)?1:0)};
 function rebuildAll(){
   allItems = ITEMS.concat(customItems);
+  allItems.sort((a,b)=>collator.compare(nomeArt(a),nomeArt(b)));
   const seen={}; DUP=new Set();
   allItems.forEach(it=>{const k=norm(nomeArt(it)); seen[k]=(seen[k]||0)+1; if(seen[k]>1)DUP.add(k);});
 }
