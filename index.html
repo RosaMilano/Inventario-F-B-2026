@@ -85,7 +85,13 @@
   .arch{position:absolute;bottom:0;left:0;right:0;background:rgba(20,73,59,.85);color:#fff;
     font-size:8.5px;font-weight:700;letter-spacing:.4px;text-align:center;padding:1px 0}
   .info{flex:1;min-width:0}
-  .desc{font-weight:600;font-size:15px;line-height:1.25}
+  .descrow{display:flex;align-items:flex-start;gap:4px}
+  .desc{flex:1;min-width:0;font-weight:600;font-size:15px;line-height:1.25;color:var(--ink);
+    border:1px solid transparent;border-radius:8px;padding:3px 6px;margin:-3px -6px;
+    background:transparent;font-family:inherit;outline:none}
+  .desc:focus{border-color:var(--primary);background:#fff;box-shadow:0 0 0 3px var(--primary-tint);margin:0;padding:6px}
+  .desc.renamed{color:var(--accent)}
+  .editico{flex:0 0 auto;color:var(--border-strong);font-size:13px;padding:2px 4px;line-height:1}
   .tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
   .tag{font-size:11px;padding:2px 8px;border-radius:20px;background:var(--bg);color:var(--muted);border:1px solid var(--border)}
   .tag.tip{background:#F3EEE4;color:var(--accent);border-color:transparent}
@@ -345,6 +351,8 @@ const listEl=document.getElementById("list");
 const qEl=document.getElementById("q");
 const fTip=document.getElementById("fTip");
 
+/* nome dell'articolo: quello rinominato dall'utente, altrimenti l'originale */
+function nomeArt(it){ const r=records[it.id]; return (r && r.desc) ? r.desc : it.descrizione; }
 function normRef(r){ const s=String(r??"").trim(); if(!s) return ""; const n=parseInt(s,10); return isNaN(n)?s:String(n); }
 function getPhoto(it){
   if(photos[it.id]) return {src:photos[it.id],arch:false};
@@ -360,14 +368,13 @@ function buildCard(it){
   const isCounted=q!=="";
   const isNew=it.id>=NEW_ID_BASE;
   const note=rec.note!=null?rec.note:(it.note||"");
+  const nome=nomeArt(it);
+  const rinominato=!!(rec.desc && rec.desc!==it.descrizione);
   const tags=[];
+  if(it.luogo) tags.push(`<span class="tag luogo">📍 ${esc(it.luogo)}</span>`);
+  if(it.specifico) tags.push(`<span class="tag zone">${esc(it.specifico)}</span>`);
   if(it.tipologia) tags.push(`<span class="tag tip">${esc(it.tipologia)}</span>`);
   if(isNew) tags.push(`<span class="tag new">NUOVO</span>`);
-  // etichetta luogo solo se serve a distinguere articoli con lo stesso nome
-  if(DUP.has(norm(it.descrizione))){
-    const z=[it.luogo,it.specifico].filter(Boolean).join(" · ");
-    if(z) tags.push(`<span class="tag zone">📍 ${esc(z)}</span>`);
-  }
 
   const ph=getPhoto(it);
   const thumb = ph
@@ -381,7 +388,10 @@ function buildCard(it){
     <div class="card-top">
       ${thumb}
       <div class="info">
-        <div class="desc">${esc(it.descrizione)}</div>
+        <div class="descrow">
+          <input class="desc ${rinominato?'renamed':''}" data-desc="${it.id}" value="${esc(nome)}" placeholder="Nome articolo">
+          <button class="editico" data-act="rename" data-id="${it.id}" title="Rinomina">✎</button>
+        </div>
         <div class="tags">${tags.join("")}${isNew?`<button class="delbtn" data-act="del" data-id="${it.id}">Elimina</button>`:""}</div>
         ${refParts.length?`<div class="ref">${refParts.join(" · ")}</div>`:""}
       </div>
@@ -410,7 +420,7 @@ function render(){
   let arr=allItems.filter(it=>{
     if(tip && it.tipologia!==tip) return false;
     if(words.length){
-      const hay=norm(it.descrizione+" "+it.luogo+" "+it.specifico+" "+it.tipologia);
+      const hay=norm(nomeArt(it)+" "+it.descrizione+" "+it.luogo+" "+it.specifico+" "+it.tipologia);
       if(!words.every(w=>hay.includes(w))) return false;
     }
     return true;
@@ -447,10 +457,15 @@ listEl.addEventListener("click",e=>{
   const btn=e.target.closest("[data-act]"); if(!btn) return;
   const act=btn.dataset.act, id=Number(btn.dataset.id);
   if(act==="photo"){ return; } // gestito dall'input file dentro
+  if(act==="rename"){
+    const inp=document.querySelector(`[data-desc="${id}"]`);
+    if(inp){ inp.focus(); try{inp.setSelectionRange(inp.value.length,inp.value.length);}catch(e){} }
+    return;
+  }
   if(act==="del"){
     const it=allItems.find(x=>x.id===id);
     if(!it) return;
-    if(!window.confirm("Eliminare definitivamente «"+it.descrizione+"»?")) return;
+    if(!window.confirm("Eliminare definitivamente «"+nomeArt(it)+"»?")) return;
     customItems=customItems.filter(x=>x.id!==id);
     delete records[id]; delete photos[id];
     idbDel("custom",id); idbDel("records",id); idbDel("photos",id);
@@ -473,11 +488,29 @@ listEl.addEventListener("click",e=>{
   setQty(id,cur);
 });
 
+listEl.addEventListener("keydown",e=>{
+  if(e.key==="Enter" && e.target.matches("[data-desc]")) e.target.blur();
+});
 listEl.addEventListener("change",e=>{
   if(e.target.matches("[data-qty]")){
     const id=Number(e.target.dataset.qty);
     setQty(id,e.target.value);
     e.target.classList.toggle("empty", e.target.value==="");
+  }
+  if(e.target.matches("[data-desc]")){
+    const id=Number(e.target.dataset.desc);
+    const it=allItems.find(x=>x.id===id);
+    const nuovo=e.target.value.trim();
+    if(!it) return;
+    if(!nuovo){ e.target.value=nomeArt(it); toast("Il nome non può essere vuoto"); return; }
+    const rec=records[id]||{};
+    if(nuovo===it.descrizione) delete rec.desc; else rec.desc=nuovo;
+    records[id]=rec; idbPut("records",id,rec);
+    e.target.classList.toggle("renamed", !!rec.desc);
+    if(it.id>=NEW_ID_BASE){ it.descrizione=nuovo; idbPut("custom",id,it); delete rec.desc; records[id]=rec; idbPut("records",id,rec); e.target.classList.remove("renamed"); }
+    rebuildAll();
+    toast("Nome aggiornato");
+    return;
   }
   if(e.target.matches("[data-note]")){
     const id=Number(e.target.dataset.note);
@@ -830,12 +863,14 @@ async function exportExcel(){
       const rec=records[it.id]||{};
       const q26=(rec.q2026!=null && rec.q2026!=="")?rec.q2026:"";
       const note=rec.note!=null?rec.note:(it.note||"");
+  const nome=nomeArt(it);
+  const rinominato=!!(rec.desc && rec.desc!==it.descrizione);
       const isNew=it.id>=NEW_ID_BASE;
       const ph=getPhoto(it);
       const hasPhoto=!!ph;
       // se c'è la foto la cella resta libera per l'immagine; altrimenti resta il vecchio riferimento
       const foto=hasPhoto?"":(it.fotoRef||"");
-      rows.push([it.luogo,it.specifico,it.tipologia,it.descrizione+(isNew?"  [NUOVO]":""),
+      rows.push([it.luogo,it.specifico,it.tipologia,nomeArt(it)+(isNew?"  [NUOVO]":""),
         it.q2023,it.q2024,q26,foto,note]);
       if(hasPhoto){
         const thumb=await makeThumb(ph.src,240);
@@ -965,12 +1000,12 @@ async function exportPhotosZip(){
     const files=[]; const usati=new Set(); const righe=[["File","Descrizione","Luogo","Tipologia","Quantità rilevata","Note"]];
     conFoto.forEach((it,i)=>{
       const rec=records[it.id]||{};
-      let base=String(i+1).padStart(3,"0")+" - "+safeName(it.descrizione);
+      let base=String(i+1).padStart(3,"0")+" - "+safeName(nomeArt(it));
       let name=base+".jpg", n=2;
       while(usati.has(name)){ name=base+" ("+(n++)+").jpg"; }
       usati.add(name);
       files.push({name, data: dataUrlToBytes(photos[it.id])});
-      righe.push([name, it.descrizione, it.luogo, it.tipologia,
+      righe.push([name, nomeArt(it), it.luogo, it.tipologia,
         (rec.q2026!=null&&rec.q2026!=="")?rec.q2026:"", (rec.note!=null?rec.note:(it.note||""))]);
     });
 
@@ -1007,7 +1042,7 @@ let DUP=new Set(); // descrizioni (normalizzate) che compaiono più volte -> mos
 function rebuildAll(){
   allItems = ITEMS.concat(customItems);
   const seen={}; DUP=new Set();
-  allItems.forEach(it=>{const k=norm(it.descrizione); seen[k]=(seen[k]||0)+1; if(seen[k]>1)DUP.add(k);});
+  allItems.forEach(it=>{const k=norm(nomeArt(it)); seen[k]=(seen[k]||0)+1; if(seen[k]>1)DUP.add(k);});
 }
 function fillSelect(sel,arr,firstStay){
   arr.forEach(v=>{const o=document.createElement("option");o.value=v;o.textContent=v;sel.appendChild(o);});
